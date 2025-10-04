@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Shield, AlertTriangle, Activity, Terminal, Search, Clock, TrendingUp, Zap, Lock, Database, Eye } from 'lucide-react';
+import { Shield, AlertTriangle, Activity, Terminal, Search, Clock, TrendingUp, Zap, Lock, Database, Eye, Wifi } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
 
 const SIEMDashboard = () => {
@@ -9,6 +9,7 @@ const SIEMDashboard = () => {
   const [threatIntelligence, setThreatIntelligence] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [scanInput, setScanInput] = useState('');
+  const [dataSource, setDataSource] = useState('live'); // 'live' or 'simulated'
   const [metrics, setMetrics] = useState({
     totalEvents: 0,
     criticalAlerts: 0,
@@ -16,6 +17,7 @@ const SIEMDashboard = () => {
     activeIncidents: 0
   });
   const eventLogRef = useRef(null);
+  const lastFetchTime = useRef(Date.now());
 
   // Simulated threat intelligence data
   const threatDatabase = {
@@ -26,7 +28,7 @@ const SIEMDashboard = () => {
     'suspicious.dll': { reputation: 'suspicious', score: 70, type: 'PUP', family: 'Adware' }
   };
 
-  // Security event types
+  // Security event types for simulated mode
   const eventTypes = [
     { type: 'INTRUSION_ATTEMPT', severity: 'critical', description: 'Multiple failed SSH login attempts detected' },
     { type: 'MALWARE_DETECTED', severity: 'critical', description: 'Malicious file execution blocked' },
@@ -40,6 +42,171 @@ const SIEMDashboard = () => {
     { type: 'DNS_TUNNELING', severity: 'high', description: 'Potential DNS tunneling detected' }
   ];
 
+  // Fetch real malware URLs from URLhaus
+  const fetchURLhausThreats = async () => {
+    try {
+      // Option 1: Direct fetch (may have CORS issues)
+      // const response = await fetch('https://urlhaus-api.abuse.ch/v1/urls/recent/limit/10/');
+      
+      // Option 2: Use CORS proxy
+      // const CORS_PROXY = 'https://corsproxy.io/?';
+      // const response = await fetch(`${CORS_PROXY}https://urlhaus-api.abuse.ch/v1/urls/recent/limit/10/`);
+      
+      // Option 3: Use Vite proxy (requires vite.config.js setup)
+      const response = await fetch('/api/urlhaus/v1/urls/recent/limit/10/');
+      const data = await response.json();
+      
+      if (data.query_status === 'ok' && data.urls) {
+        return data.urls.map(url => {
+          try {
+            const urlObj = new URL(url.url);
+            return {
+              id: `EVT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              timestamp: url.date_added,
+              type: 'MALWARE_URL_DETECTED',
+              severity: url.threat === 'malware_download' ? 'critical' : 'high',
+              description: `Live malware URL detected: ${url.threat || 'Unknown threat'}`,
+              sourceIP: urlObj.hostname,
+              destIP: '10.0.1.100',
+              user: 'threat_intel',
+              status: url.url_status === 'online' ? 'detected' : 'archived',
+              automated: true,
+              metadata: {
+                url: url.url.substring(0, 50) + '...',
+                malwareType: url.tags ? url.tags.join(', ') : 'Unknown',
+                reporter: url.reporter,
+                urlStatus: url.url_status,
+                source: 'URLhaus (abuse.ch)'
+              }
+            };
+          } catch (e) {
+            return null;
+          }
+        }).filter(Boolean);
+      }
+    } catch (error) {
+      console.error('Error fetching URLhaus data:', error);
+    }
+    return [];
+  };
+
+  // Fetch real SSH attack IPs from Blocklist.de
+  const fetchBlocklistSSH = async () => {
+    try {
+      // Use CORS proxy if direct fetch fails
+      const CORS_PROXY = 'https://corsproxy.io/?';
+      const response = await fetch(`${CORS_PROXY}https://lists.blocklist.de/lists/ssh.txt`);
+      const text = await response.text();
+      const ips = text.split('\n')
+        .filter(ip => ip.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/))
+        .slice(0, 5); // Get 5 random IPs
+      
+      return ips.map(ip => ({
+        id: `EVT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        timestamp: new Date().toISOString(),
+        type: 'INTRUSION_ATTEMPT',
+        severity: 'critical',
+        description: 'Live SSH brute force attack detected',
+        sourceIP: ip,
+        destIP: '10.0.0.22',
+        user: 'root',
+        status: 'blocked',
+        automated: true,
+        metadata: {
+          attackType: 'SSH Brute Force',
+          port: '22',
+          attempts: Math.floor(Math.random() * 1000) + 100,
+          source: 'Blocklist.de',
+          realTime: true
+        }
+      }));
+    } catch (error) {
+      console.error('Error fetching Blocklist.de data:', error);
+    }
+    return [];
+  };
+
+  // Fetch AbuseIPDB data (requires free API key)
+  const fetchAbuseIPDB = async () => {
+    // Note: Requires API key - sign up at https://www.abuseipdb.com/register
+    // Uncomment and add your key to use this source
+    /*
+    try {
+      const response = await fetch(
+        'https://api.abuseipdb.com/api/v2/blacklist?confidenceMinimum=90&limit=10',
+        {
+          headers: {
+            'Key': 'YOUR_ABUSEIPDB_API_KEY',
+            'Accept': 'application/json'
+          }
+        }
+      );
+      const data = await response.json();
+      
+      if (data.data) {
+        return data.data.map(item => ({
+          id: `EVT-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          timestamp: new Date().toISOString(),
+          type: 'MALICIOUS_IP_DETECTED',
+          severity: item.abuseConfidenceScore > 95 ? 'critical' : 'high',
+          description: `Malicious IP detected with ${item.abuseConfidenceScore}% confidence`,
+          sourceIP: item.ipAddress,
+          destIP: '10.0.1.50',
+          user: 'threat_intel',
+          status: 'detected',
+          automated: true,
+          metadata: {
+            country: item.countryCode,
+            reports: item.totalReports,
+            confidenceScore: item.abuseConfidenceScore,
+            source: 'AbuseIPDB'
+          }
+        }));
+      }
+    } catch (error) {
+      console.error('Error fetching AbuseIPDB data:', error);
+    }
+    */
+    return [];
+  };
+
+  // Fetch live threat data from all sources
+  const fetchLiveThreatData = async () => {
+    const now = Date.now();
+    
+    // Prevent too frequent fetching (minimum 30 seconds between fetches)
+    if (now - lastFetchTime.current < 30000) {
+      return;
+    }
+    
+    lastFetchTime.current = now;
+    
+    try {
+      const [urlhausData, sshAttacks] = await Promise.all([
+        fetchURLhausThreats(),
+        fetchBlocklistSSH()
+      ]);
+      
+      const allThreats = [...urlhausData, ...sshAttacks];
+      
+      // Add to events with slight delay for visual effect
+      allThreats.forEach((threat, index) => {
+        setTimeout(() => {
+          analyzeEvent(threat);
+          setEvents(prev => [threat, ...prev].slice(0, 100));
+          setMetrics(prev => ({
+            ...prev,
+            totalEvents: prev.totalEvents + 1
+          }));
+        }, index * 500); // Stagger by 500ms
+      });
+      
+    } catch (error) {
+      console.error('Error fetching live data:', error);
+    }
+  };
+
+  // Generate simulated event (original function)
   const generateEvent = () => {
     const eventType = eventTypes[Math.floor(Math.random() * eventTypes.length)];
     const sourceIPs = ['192.168.1.100', '10.0.0.50', '172.16.0.25', '203.0.113.42'];
@@ -64,11 +231,9 @@ const SIEMDashboard = () => {
     const threat = threatDatabase[event.sourceIP];
     
     if (threat && threat.reputation === 'malicious') {
-      // Automated response
       event.status = 'blocked';
       event.automated = true;
       
-      // Generate alert
       const alert = {
         id: `ALT-${Date.now()}`,
         eventId: event.id,
@@ -87,17 +252,17 @@ const SIEMDashboard = () => {
         blockedThreats: prev.blockedThreats + 1,
         activeIncidents: prev.activeIncidents + 1
       }));
-    } else if (event.severity === 'critical') {
-      // Manual review required
+    } else if (event.severity === 'critical' || event.automated) {
       const alert = {
         id: `ALT-${Date.now()}`,
         eventId: event.id,
         timestamp: new Date().toISOString(),
         severity: event.severity,
-        title: `Manual Review Required: ${event.type}`,
+        title: event.automated ? `Live Threat Detected: ${event.type}` : `Manual Review Required: ${event.type}`,
         description: event.description,
         status: 'pending',
-        automated: false
+        automated: event.automated || false,
+        actions: event.automated ? ['Threat Logged', 'Alert Generated', 'Monitoring Active'] : undefined
       };
       
       setAlerts(prev => [alert, ...prev].slice(0, 50));
@@ -108,21 +273,31 @@ const SIEMDashboard = () => {
     }
   };
 
-  // Event generation loop
+  // Event generation loop - switches between live and simulated
   useEffect(() => {
-    const interval = setInterval(() => {
-      const newEvent = generateEvent();
-      analyzeEvent(newEvent);
+    if (dataSource === 'live') {
+      // Fetch live data immediately
+      fetchLiveThreatData();
       
-      setEvents(prev => [newEvent, ...prev].slice(0, 100));
-      setMetrics(prev => ({
-        ...prev,
-        totalEvents: prev.totalEvents + 1
-      }));
-    }, 3000);
-
-    return () => clearInterval(interval);
-  }, []);
+      // Then fetch every 60 seconds
+      const interval = setInterval(fetchLiveThreatData, 60000);
+      return () => clearInterval(interval);
+    } else {
+      // Simulated mode - original behavior
+      const interval = setInterval(() => {
+        const newEvent = generateEvent();
+        analyzeEvent(newEvent);
+        
+        setEvents(prev => [newEvent, ...prev].slice(0, 100));
+        setMetrics(prev => ({
+          ...prev,
+          totalEvents: prev.totalEvents + 1
+        }));
+      }, 3000);
+      
+      return () => clearInterval(interval);
+    }
+  }, [dataSource]);
 
   // Auto-scroll event log
   useEffect(() => {
@@ -165,6 +340,7 @@ const SIEMDashboard = () => {
     switch(status) {
       case 'blocked': return 'bg-red-500/20 text-red-400 border-red-500/30';
       case 'detected': return 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30';
+      case 'archived': return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
       case 'resolved': return 'bg-green-500/20 text-green-400 border-green-500/30';
       default: return 'bg-gray-500/20 text-gray-400 border-gray-500/30';
     }
@@ -192,12 +368,41 @@ const SIEMDashboard = () => {
             <Shield className="w-8 h-8 text-green-500" />
             <div>
               <h1 className="text-2xl font-bold text-green-500">SIEM SECURITY OPERATIONS CENTER</h1>
-              <p className="text-sm text-green-600">Real-time Threat Detection & Response System</p>
+              <p className="text-sm text-green-600">
+                {dataSource === 'live' ? 'Real-time Threat Detection from Live Feeds' : 'Simulated Threat Detection & Response System'}
+              </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Activity className="w-5 h-5 animate-pulse text-green-500" />
-            <span className="text-green-500">SYSTEM ACTIVE</span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setDataSource('live')}
+                className={`px-3 py-1 border text-sm transition-all ${
+                  dataSource === 'live'
+                    ? 'border-green-500 bg-green-500/20 text-green-400'
+                    : 'border-green-900 bg-black text-green-600 hover:border-green-700'
+                }`}
+              >
+                <Wifi className="w-4 h-4 inline mr-1" />
+                LIVE
+              </button>
+              <button
+                onClick={() => setDataSource('simulated')}
+                className={`px-3 py-1 border text-sm transition-all ${
+                  dataSource === 'simulated'
+                    ? 'border-green-500 bg-green-500/20 text-green-400'
+                    : 'border-green-900 bg-black text-green-600 hover:border-green-700'
+                }`}
+              >
+                SIMULATED
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <Activity className={`w-5 h-5 ${dataSource === 'live' ? 'animate-pulse text-red-500' : 'animate-pulse text-green-500'}`} />
+              <span className={dataSource === 'live' ? 'text-red-500' : 'text-green-500'}>
+                {dataSource === 'live' ? 'LIVE DATA' : 'SYSTEM ACTIVE'}
+              </span>
+            </div>
           </div>
         </div>
       </div>
@@ -261,6 +466,21 @@ const SIEMDashboard = () => {
               </div>
             </div>
           </div>
+
+          {/* Data Source Info Banner */}
+          {dataSource === 'live' && (
+            <div className="border-2 border-blue-500 p-4 bg-blue-500/10">
+              <div className="flex items-center gap-3">
+                <Wifi className="w-6 h-6 text-blue-400 animate-pulse" />
+                <div>
+                  <p className="text-blue-400 font-bold">LIVE THREAT INTELLIGENCE ACTIVE</p>
+                  <p className="text-blue-600 text-sm">
+                    Data sources: URLhaus (Malware URLs) • Blocklist.de (SSH Attacks) • Updates every 60 seconds
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Charts */}
           <div className="grid grid-cols-2 gap-4">
@@ -334,6 +554,11 @@ const SIEMDashboard = () => {
                           AUTO-RESOLVED
                         </span>
                       )}
+                      {event.metadata?.source && (
+                        <span className="text-xs bg-red-500/20 text-red-400 px-2 py-1 border border-red-500/30">
+                          {event.metadata.source}
+                        </span>
+                      )}
                     </div>
                     <span className="text-green-600 text-sm">{new Date(event.timestamp).toLocaleTimeString()}</span>
                   </div>
@@ -370,6 +595,11 @@ const SIEMDashboard = () => {
                     <span className={`text-xs px-2 py-1 border ${getStatusColor(event.status)}`}>
                       {event.status.toUpperCase()}
                     </span>
+                    {event.metadata?.source && (
+                      <span className="text-xs bg-red-500/20 text-red-400 px-2 py-1 border border-red-500/30">
+                        LIVE: {event.metadata.source}
+                      </span>
+                    )}
                   </div>
                   <span className="text-green-600 text-sm">{new Date(event.timestamp).toLocaleString()}</span>
                 </div>
@@ -380,6 +610,16 @@ const SIEMDashboard = () => {
                   <span>User: {event.user}</span>
                   <span>Automated: {event.automated ? 'YES' : 'NO'}</span>
                 </div>
+                {event.metadata && (
+                  <div className="mt-2 pt-2 border-t border-green-900">
+                    <p className="text-green-700 text-xs">
+                      {event.metadata.url && `URL: ${event.metadata.url}`}
+                      {event.metadata.malwareType && ` | Type: ${event.metadata.malwareType}`}
+                      {event.metadata.attackType && ` | Attack: ${event.metadata.attackType}`}
+                      {event.metadata.attempts && ` | Attempts: ${event.metadata.attempts}`}
+                    </p>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -548,7 +788,7 @@ const SIEMDashboard = () => {
       {/* Event Detail Modal */}
       {selectedEvent && (
         <div className="fixed inset-0 bg-black/90 flex items-center justify-center p-8 z-50" onClick={() => setSelectedEvent(null)}>
-          <div className="border-2 border-green-500 bg-black p-6 max-w-3xl w-full" onClick={e => e.stopPropagation()}>
+          <div className="border-2 border-green-500 bg-black p-6 max-w-3xl w-full max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xl font-bold text-green-400">EVENT DETAILS</h3>
               <button onClick={() => setSelectedEvent(null)} className="text-green-500 hover:text-green-300">
@@ -602,12 +842,24 @@ const SIEMDashboard = () => {
                 <p className="text-green-600 text-sm mb-2">DESCRIPTION</p>
                 <p className="text-green-400">{selectedEvent.description}</p>
               </div>
+              {selectedEvent.metadata && (
+                <div className="border-t border-green-500/30 pt-3">
+                  <p className="text-green-600 text-sm mb-2">ADDITIONAL METADATA</p>
+                  <div className="bg-green-500/10 border border-green-500/30 p-3 rounded">
+                    {Object.entries(selectedEvent.metadata).map(([key, value]) => (
+                      <div key={key} className="text-green-400 text-sm mb-1">
+                        <span className="text-green-600">{key}:</span> {value}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               {selectedEvent.automated && (
                 <div className="bg-blue-500/10 border border-blue-500/30 p-3">
                   <p className="text-blue-400 font-bold mb-2">AUTOMATED RESPONSE EXECUTED</p>
                   <p className="text-green-400 text-sm">
                     This event triggered automated SIEM workflow: Detection → Analysis → Response. 
-                    Threat was identified in database and appropriate countermeasures were applied automatically.
+                    {selectedEvent.metadata?.source && ` Data sourced from ${selectedEvent.metadata.source}.`}
                   </p>
                 </div>
               )}
@@ -638,9 +890,11 @@ const SIEMDashboard = () => {
       <div className="fixed bottom-0 left-0 right-0 border-t-2 border-green-500 bg-black p-2">
         <div className="flex items-center justify-between text-sm">
           <div className="flex items-center gap-4">
-            <span className="text-green-500">● SYSTEM STATUS: OPERATIONAL</span>
+            <span className={dataSource === 'live' ? 'text-red-500' : 'text-green-500'}>
+              ● {dataSource === 'live' ? 'LIVE THREAT FEED ACTIVE' : 'SYSTEM STATUS: OPERATIONAL'}
+            </span>
             <span className="text-green-600">| Events/Min: {Math.floor(events.length / 10)}</span>
-            <span className="text-green-600">| CPU: 45%</span>
+            <span className="text-green-600">| Mode: {dataSource.toUpperCase()}</span>
             <span className="text-green-600">| Memory: 2.1GB</span>
           </div>
           <div className="flex items-center gap-2">
